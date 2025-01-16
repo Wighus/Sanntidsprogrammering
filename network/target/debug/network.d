@@ -1,0 +1,1 @@
+C:\Users\wighu\OneDrive\Dokumenter\TTK4145\Sanntidsprogrammering\Nettverk\network\target\debug\network.exe: C:\Users\wighu\OneDrive\Dokumenter\TTK4145\Sanntidsprogrammering\Nettverk\network\src\main.rs
