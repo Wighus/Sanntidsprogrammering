@@ -123,6 +123,66 @@ In your solution, make sure that the two threads intermingle, and don't just run
  - Reminder: Make sure that the threads get a chance to interleave their execution.
 
 
+
+ -------------------------------------------------------------------------------
+ 
+#include <pthread.h>
+#include <stdio.h>
+#include <stdint.h>
+
+pthread_mutex_t mutex;
+int i = 0;
+
+// Note the return type: void*
+void* incrementingThreadFunction(){
+    // TODO: increment i 1_000_000 times
+    for (int32_t k = 0; k<1000000; k++ ){
+        pthread_mutex_lock(&mutex);
+        i++;
+        pthread_mutex_unlock(&mutex);
+    }
+    return NULL;
+}
+
+void* decrementingThreadFunction(){
+    // TODO: decrement i 1_000_000 times
+        for (int32_t k = 0; k<1000000; k++ ){
+        pthread_mutex_lock(&mutex);
+        i--;
+        pthread_mutex_unlock(&mutex);
+    }
+    return NULL;
+}
+
+
+int main(){
+
+    pthread_mutex_init(&mutex, NULL);
+
+    pthread_t incrementingThread, decrementingThread;
+    // TODO: 
+    // start the two functions as their own threads using `pthread_create`
+    // Hint: search the web! Maybe try "pthread_create example"?
+
+
+    pthread_create(&incrementingThread,NULL,incrementingThreadFunction,NULL);
+    pthread_create(&decrementingThread,NULL,decrementingThreadFunction,NULL);
+    
+    
+    // TODO:
+    // wait for the two threads to be done before printing the final result
+    // Hint: Use `pthread_join`    
+
+    pthread_join(incrementingThread,NULL);
+    pthread_join(decrementingThread,NULL);
+
+    pthread_mutex_destroy(&mutex);
+
+    printf("The magic number is: %d\n", i);
+    return 0;
+}-------------------------------------------------------------------------------------
+
+
 ### Go
 
 Using shared variable synchronization is possible, but not the idiomatic approach in Go. You should instead create a "server" that is responsible for its own data, `select{}` (http://golang.org/ref/spec#Select_statements)s messages, and perform different actions on its data when it receives a corresponding message. 
@@ -138,7 +198,54 @@ Remember from before where we had no good way of waiting for a goroutine to fini
 
 *Hint: you can "receive and discard" data from a channel by just doing `<-channelName`.*
 
----
+----------------------------------------------------------
+// Use `go run foo.go` to run your program
+
+package main
+
+import (
+    . "fmt"
+    "runtime"
+    "time"
+    "sync"
+)
+
+var i = 0
+var mu sync.Mutex
+
+func incrementing(){
+    //TODO: increment i 1000000 times
+    for n := 0; n < 1000000; n++ {
+		mu.Lock() 
+		i++
+		mu.Unlock()
+    }
+}
+
+func decrementing(){
+    //TODO: decrement i 1000000 times
+    for n := 0; n < 1000000; n++ {
+		mu.Lock() 
+		i--
+		mu.Unlock()
+    }
+}
+
+func main() {
+    // What does GOMAXPROCS do? What happens if you set it to 1?
+    runtime.GOMAXPROCS(2)    // Uses two cores instead of 1
+	
+    // TODO: Spawn both functions as goroutines
+    go incrementing()
+    go decrementing()
+	
+    // We have no direct way to wait for the completion of a goroutine (without additional synchronization of some sort)
+    // We will do it properly with channels soon. For now: Sleep.
+    time.Sleep(500*time.Millisecond)
+    Println("The magic number is:", i)
+}
+
+-----------------------------------------------------------
 
 Commit and push your code changes to GitHub.
 
@@ -179,7 +286,126 @@ The expected behavior (dependent on timing from the sleeps, so it may not be com
 [producer]: pushing 9
    -- program terminates here(-ish) --
 ```
+---------------------------------------------------------------
+// compile with:  gcc -g main.c ringbuf.c -lpthread
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <time.h>
+
+#include "ringbuf.h"
+
+//pthread_mutex_t mutex;
+
+struct BoundedBuffer {
+    struct RingBuffer*  buf;
+    pthread_mutex_t     mtx;
+    sem_t               numElements;
+    sem_t               capacity;
+    
+    
+};
+
+struct BoundedBuffer* buf_new(int size){
+    struct BoundedBuffer* buf = malloc(sizeof(struct BoundedBuffer));
+    buf->buf = rb_new(size);
+    
+    pthread_mutex_init(&buf->mtx, NULL);
+    // TODO: initialize semaphores
+    sem_init(&buf->capacity,      0, 5);
+	sem_init(&buf->numElements,   0, 0);
+    
+    return buf;    
+}
+
+void buf_destroy(struct BoundedBuffer* buf){
+    rb_destroy(buf->buf);
+    pthread_mutex_destroy(&buf->mtx);
+    sem_destroy(&buf->numElements);
+    sem_destroy(&buf->capacity);
+    free(buf);
+}
+
+
+
+
+void buf_push(struct BoundedBuffer* buf, int val){    
+    // TODO: wait for there to be room in the buffer
+    // TODO: make sure there is no concurrent access to the buffer internals
+
+    sem_wait(&buf->capacity);
+    pthread_mutex_lock(&buf->mtx);
+    
+    rb_push(buf->buf, val);
+        
+    // TODO: signal that there are new elements in the buffer   
+    
+    pthread_mutex_unlock(&buf->mtx);
+    sem_post(&buf->numElements); 
+}
+
+int buf_pop(struct BoundedBuffer* buf){
+    // TODO: same, but different?
+
+    sem_wait(&buf->numElements);
+    pthread_mutex_lock(&buf->mtx);
+
+    int val = rb_pop(buf->buf);  
+
+    pthread_mutex_unlock(&buf->mtx);
+    sem_post(&buf->capacity);  
+    
+    return val;
+}
+
+
+
+void* producer(void* args){
+    struct BoundedBuffer* buf = (struct BoundedBuffer*)(args);
+    
+    for(int i = 0; i < 10; i++){
+
+        nanosleep(&(struct timespec){0, 100*1000*1000}, NULL);
+        printf("[producer]: pushing %d\n", i);
+        buf_push(buf, i);
+    }
+    return NULL;
+}
+
+void* consumer(void* args){
+    struct BoundedBuffer* buf = (struct BoundedBuffer*)(args);
+    
+    // give the producer a 1-second head start
+    nanosleep(&(struct timespec){1, 0}, NULL);
+    while(1){
+
+        int val = buf_pop(buf);
+        printf("[consumer]: %d\n", val);
+        nanosleep(&(struct timespec){0, 50*1000*1000}, NULL);
+    }
+}
+
+int main(){ 
+    
+    struct BoundedBuffer* buf = buf_new(5);
+    
+    pthread_t producer_thr;
+    pthread_t consumer_thr;
+    pthread_create(&producer_thr, NULL, producer, buf);
+    pthread_create(&consumer_thr, NULL, consumer, buf);
+    
+    pthread_join(producer_thr, NULL);
+    pthread_cancel(consumer_thr);
+    
+    buf_destroy(buf);
+
+    return 0;
+}
+
+
+---------------------------------------------------------------
 
 ### Go
 
